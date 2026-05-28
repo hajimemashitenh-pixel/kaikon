@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>海コン ToDo</title>
+
+  <!-- Firebase SDK (compat版) -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Hiragino Kaku Gothic ProN', 'Meiryo', sans-serif;
+      background: #e2e2e2;
+      min-height: 100vh;
+      padding: 10px 10px 80px;
+    }
+
+    /* ===== ローディング ===== */
+    #loading-screen {
+      position: fixed; inset: 0; background: #e2e2e2;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; z-index: 9999;
+      gap: 16px;
+    }
+    #loading-screen.hidden { display: none; }
+    .loading-spinner {
+      width: 40px; height: 40px;
+      border: 4px solid #ddd; border-top-color: #1a73e8;
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading-screen p { font-size: 14px; color: #888; font-weight: bold; }
+
+    /* ===== ヘッダー ===== */
+    #header { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    #header h1 { flex:1; font-size:16px; font-weight:bold; color:#333; text-align:center; }
+
+    /* ===== 同期インジケーター ===== */
+    #sync-status {
+      font-size:10px; padding:3px 8px; border-radius:10px; font-weight:bold;
+      background:#d4f5df; color:#145523; white-space:nowrap; flex-shrink:0;
+    }
+    #sync-status.syncing { background:#fff3cd; color:#856404; }
+    #sync-status.error   { background:#fce8e8; color:#d93025; }
+
+    /* ===== 日付ナビ ===== */
+    #date-nav {
+      display:flex; align-items:center; gap:5px;
+      background:#fff; border-radius:10px; padding:7px 10px;
+      margin-bottom:8px; box-shadow:0 1px 4px rgba(0,0,0,0.08);
+    }
+    .date-arrow { padding:7px 13px; font-size:14px; background:#f2f2f2; border:none; border-radius:7px; cursor:pointer; color:#555; -webkit-tap-highlight-color:transparent; }
+    .date-arrow:active { background:#e0e0e0; }
+    #date-display { flex:1; text-align:center; font-size:15px; font-weight:bold; color:#222; }
+    #date-display .today-label { font-size:10px; font-weight:bold; color:#fff; background:#e33; border-radius:4px; padding:1px 4px; margin-left:4px; vertical-align:middle; }
+    #btn-all-dates { padding:6px 10px; font-size:11px; font-weight:bold; background:#f2f2f2; border:2px solid transparent; border-radius:16px; color:#888; cursor:pointer; white-space:nowrap; -webkit-tap-highlight-color:transparent; transition:all 0.15s; }
+    #btn-all-dates.all-active { background:#555; color:#fff; border-color:#555; }
+
+    /* ===== モード切替 ===== */
+    #mode-tab-bar { display:flex; gap:3px; background:#fff; border-radius:10px 10px 0 0; padding:4px 4px 0; }
+    .mode-tab { flex:1; padding:9px 4px; font-size:11px; font-weight:bold; border:none; border-radius:7px 7px 0 0; background:#f0f0f0; color:#aaa; cursor:pointer; transition:all 0.15s; -webkit-tap-highlight-color:transparent; white-space:nowrap; }
+    .mode-tab.mode-active { background:#fff; color:#333; box-shadow:0 -2px 0 #333 inset; }
+
+    /* ===== パネル共通 ===== */
+    .panel-card { background:#fff; border-radius:0 0 12px 12px; padding:11px; margin-bottom:8px; box-shadow:0 2px 6px rgba(0,0,0,0.1); display:none; flex-direction:column; gap:8px; }
+    .panel-card.panel-active { display:flex; }
+
+    /* ===== 手動入力 ===== */
+    #input-row { display:flex; gap:7px; }
+    #task-input { flex:1; padding:10px 12px; font-size:15px; border:1.5px solid #ddd; border-radius:8px; outline:none; background:#fafafa; min-width:0; }
+    #task-input:focus { border-color:#999; background:#fff; }
+    #input-hint { font-size:10px; color:#bbb; text-align:center; margin-top:-2px; }
+    #voice-btn { padding:10px 12px; font-size:19px; background:#fafafa; border:1.5px solid #ddd; border-radius:8px; cursor:pointer; flex-shrink:0; line-height:1; }
+    #voice-btn.recording { background:#d93025; color:#fff; border-color:#d93025; animation:pulse 1s infinite; }
+    #voice-btn.unsupported { opacity:0.3; cursor:not-allowed; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.5} }
+    #datetime-row { display:flex; gap:6px; align-items:center; }
+    .dt-label { font-size:11px; font-weight:bold; color:#888; flex-shrink:0; }
+    #date-input, #time-input { flex:1; padding:9px 8px; font-weight:bold; border:1.5px solid #ddd; border-radius:8px; outline:none; background:#fafafa; color:#222; min-width:0; -webkit-appearance:none; }
+    #date-input { font-size:14px; flex:1.2; }
+    #time-input { font-size:16px; }
+    #tag-row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+    .tag-group { display:flex; gap:4px; }
+    .tag-btn { padding:8px 12px; font-size:13px; font-weight:bold; border:2px solid #ddd; border-radius:7px; background:#f5f5f5; color:#999; cursor:pointer; transition:all 0.15s; white-space:nowrap; -webkit-tap-highlight-color:transparent; }
+    .tag-btn[data-value="20ft"].tag-active { background:#1a73e8; border-color:#1a73e8; color:#fff; }
+    .tag-btn[data-value="40ft"].tag-active { background:#d93025; border-color:#d93025; color:#fff; }
+    .tag-btn[data-value="2軸"].tag-active  { background:#188038; border-color:#188038; color:#fff; }
+    .tag-btn[data-value="3軸"].tag-active  { background:#7b1fa2; border-color:#7b1fa2; color:#fff; }
+    .tag-sep { width:1px; height:24px; background:#e0e0e0; flex-shrink:0; }
+    #add-btn { margin-left:auto; padding:9px 18px; font-size:14px; font-weight:bold; background:#333; color:#fff; border:none; border-radius:8px; cursor:pointer; flex-shrink:0; -webkit-tap-highlight-color:transparent; }
+    #add-btn:active { background:#555; }
+
+    /* ===== インポート ===== */
+    .import-guide { background:#f7f7f7; border-radius:7px; padding:9px 11px; font-size:10px; color:#777; line-height:1.6; }
+    .import-guide strong { color:#333; display:block; margin-bottom:2px; font-size:11px; }
+    .import-guide .col-row { display:flex; gap:3px; flex-wrap:wrap; }
+    .col-tag { background:#e8e8e8; border-radius:3px; padding:1px 5px; font-size:10px; color:#555; }
+    .col-tag.col-required { background:#cde4ff; color:#1a4fa0; }
+    .import-opt-row { display:flex; align-items:center; gap:7px; }
+    .import-opt-row label { font-size:13px; font-weight:bold; color:#555; cursor:pointer; }
+    #import-textarea { width:100%; height:90px; padding:9px 11px; font-size:12px; border:1.5px solid #ddd; border-radius:8px; outline:none; background:#fafafa; resize:vertical; font-family:monospace; color:#333; line-height:1.4; }
+    #import-preview { font-size:11px; color:#666; background:#f7f7f7; border-radius:7px; padding:7px 10px; display:none; line-height:1.6; max-height:130px; overflow-y:auto; }
+    .preview-item { display:flex; gap:5px; align-items:center; padding:2px 0; border-bottom:1px solid #eee; flex-wrap:wrap; }
+    .preview-item:last-child { border-bottom:none; }
+    .preview-date,.preview-time { color:#aaa; white-space:nowrap; flex-shrink:0; font-size:11px; }
+    .preview-time { color:#1a73e8; font-weight:bold; }
+    .preview-name { color:#333; word-break:break-all; flex:1; font-size:11px; }
+    .preview-tags { display:flex; gap:2px; flex-shrink:0; }
+    .preview-tag { padding:1px 4px; border-radius:3px; font-size:10px; font-weight:bold; }
+    .pt-20ft{background:#cde4ff;color:#1a4fa0;} .pt-40ft{background:#ffd6d4;color:#a50e0e;}
+    .pt-2jiku{background:#d4f5df;color:#145523;} .pt-3jiku{background:#ead5f5;color:#5b1fa2;}
+    #import-actions { display:flex; gap:7px; }
+    #btn-parse-import { flex:1; padding:10px; font-size:13px; font-weight:bold; background:#f0f0f0; border:none; border-radius:8px; color:#555; cursor:pointer; }
+    #btn-confirm-import { flex:1.5; padding:10px; font-size:13px; font-weight:bold; background:#333; border:none; border-radius:8px; color:#fff; cursor:pointer; transition:opacity 0.2s; }
+    #btn-confirm-import:disabled { opacity:0.35; cursor:default; }
+    #import-msg { font-size:11px; text-align:center; min-height:14px; color:#188038; font-weight:bold; }
+
+    /* ===== バックアップ ===== */
+    .bk-title { font-size:11px; font-weight:bold; color:#888; border-bottom:1px solid #eee; padding-bottom:5px; }
+    .backup-btn { flex:1; padding:12px 8px; font-size:13px; font-weight:bold; border:none; border-radius:9px; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+    .backup-btn-row { display:flex; gap:7px; }
+    .trash-header { display:flex; align-items:center; gap:7px; font-size:12px; font-weight:bold; color:#777; }
+    .trash-count-badge { background:#eee; color:#888; border-radius:16px; padding:2px 7px; font-size:10px; }
+    .trash-list { display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto; }
+    .trash-item { background:#f7f7f7; border-radius:9px; padding:9px 11px; display:flex; align-items:center; gap:7px; }
+    .trash-item-body { flex:1; min-width:0; }
+    .trash-item-name { font-size:13px; color:#444; word-break:break-all; line-height:1.3; }
+    .trash-item-meta { font-size:10px; color:#aaa; margin-top:2px; }
+    .trash-restore-btn { padding:6px 11px; font-size:12px; font-weight:bold; background:#e8f0fe; color:#1a73e8; border:none; border-radius:7px; cursor:pointer; flex-shrink:0; white-space:nowrap; }
+    .trash-empty-msg { text-align:center; color:#ccc; font-size:12px; padding:12px 0; }
+    #backup-msg { font-size:11px; text-align:center; min-height:14px; font-weight:bold; }
+
+    /* ===== 音声ステータス ===== */
+    #voice-status { text-align:center; font-size:12px; color:#d93025; font-weight:bold; min-height:16px; margin-bottom:6px; }
+
+    /* ===== フィルターバー ===== */
+    #filter-bar { background:#fff; border-radius:10px; padding:8px 10px; margin-bottom:8px; box-shadow:0 1px 4px rgba(0,0,0,0.08); display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
+    .filter-btn { padding:5px 10px; font-size:12px; font-weight:bold; border:2px solid #ddd; border-radius:16px; background:#f5f5f5; color:#aaa; cursor:pointer; transition:all 0.15s; white-space:nowrap; -webkit-tap-highlight-color:transparent; }
+    .filter-btn.f-all.filter-active              { background:#555;    border-color:#555;    color:#fff; }
+    .filter-btn[data-fvalue="20ft"].filter-active { background:#1a73e8; border-color:#1a73e8; color:#fff; }
+    .filter-btn[data-fvalue="40ft"].filter-active { background:#d93025; border-color:#d93025; color:#fff; }
+    .filter-btn[data-fvalue="2軸"].filter-active  { background:#188038; border-color:#188038; color:#fff; }
+    .filter-btn[data-fvalue="3軸"].filter-active  { background:#7b1fa2; border-color:#7b1fa2; color:#fff; }
+    #task-count { margin-left:auto; font-size:11px; color:#aaa; font-weight:bold; white-space:nowrap; }
+    #status-filter-row { display:flex; gap:5px; align-items:center; width:100%; margin-top:5px; padding-top:7px; border-top:1px solid #f0f0f0; }
+    .sf-label { font-size:11px; color:#aaa; font-weight:bold; flex-shrink:0; }
+    .sf-btn { padding:5px 11px; font-size:12px; font-weight:bold; border:2px solid #ddd; border-radius:16px; background:#f5f5f5; color:#aaa; cursor:pointer; white-space:nowrap; -webkit-tap-highlight-color:transparent; transition:all 0.15s; }
+    .sf-btn[data-sf="active"].sf-active { background:#e8a000; border-color:#e8a000; color:#fff; }
+    .sf-btn[data-sf="unpick"].sf-active { background:#1a73e8; border-color:#1a73e8; color:#fff; }
+    .sf-btn[data-sf="picked"].sf-active { background:#7b1fa2; border-color:#7b1fa2; color:#fff; }
+    .sf-btn[data-sf="done"].sf-active   { background:#188038; border-color:#188038; color:#fff; }
+    .sf-btn[data-sf="all"].sf-active    { background:#555;    border-color:#555;    color:#fff; }
+
+    /* ===== 日付グループ ===== */
+    .date-group-header { display:flex; align-items:center; gap:7px; margin:12px 0 5px; }
+    .date-group-header:first-child { margin-top:0; }
+    .date-group-label { font-size:12px; font-weight:bold; color:#666; white-space:nowrap; }
+    .date-group-label.is-today { color:#d93025; }
+    .date-group-line { flex:1; height:1px; background:#ccc; }
+
+    /* ===== タスクリスト ===== */
+    #task-list { display:flex; flex-direction:column; gap:5px; }
+
+    /* ===== タスクアイテム ===== */
+    .task-item {
+      border-radius:10px; display:flex; align-items:center;
+      box-shadow:0 1px 3px rgba(0,0,0,0.08);
+      user-select:none; touch-action:pan-y;
+      position:relative; background:#fff; border-left:4px solid #ddd;
+      -webkit-tap-highlight-color:transparent; transition:opacity 0.15s, transform 0.1s;
+    }
+    /* ===== 号車入力 ===== */
+    .chassis-input {
+      font-size: 11px; padding: 2px 5px;
+      border: 1px solid #ddd; border-radius: 4px;
+      background: #f9f9f9; color: #555;
+      width: 72px; min-width: 0; outline: none;
+      font-family: monospace;
+    }
+    .chassis-input:focus { border-color: #999; background: #fff; }
+    .chassis-input.has-value { background: #e8f5e9; border-color: #81c784; color: #2e7d32; font-weight: bold; }
+    .no-badge {
+      font-size: 9px; padding: 1px 5px; border-radius: 3px;
+      background: #eee; color: #aaa; cursor: pointer;
+      font-family: monospace; white-space: nowrap; flex-shrink: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .no-badge:active { opacity: 0.6; }
+    .size-badge {
+      font-size: 10px; font-weight: bold;
+      padding: 2px 5px; border-radius: 4px;
+      flex-shrink: 0; white-space: nowrap;
+    }
+    .task-item.type-20ft .size-badge { background:#cde4ff; color:#1a4fa0; }
+    .task-item.type-40ft .size-badge { background:#ffd6d4; color:#a50e0e; }
+    .task-item:not(.type-20ft):not(.type-40ft) .size-badge { background:#eee; color:#999; }
+    .cn-badge {
+      display: inline-block;
+      font-family: monospace;
+      font-size: 11px;
+      font-weight: bold;
+      color: #444;
+      background: #ebebeb;
+      border-radius: 4px;
+      padding: 2px 6px;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+      -webkit-tap-highlight-color: transparent;
+      vertical-align: middle;
+    }
+    .cn-badge:active { opacity: 0.6; }
+    /* 時間+コンテナ番号を同一行に */
+    .task-info-row {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    /* ===== 削除ボタン ===== */
+    .task-delete-btn {
+      width: 26px; height: 26px; border-radius: 50%;
+      border: none; background: #fce8e8; color: #d93025;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      font-size: 13px; flex-shrink: 0; margin-left: 3px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .task-delete-btn:active { background: #fca5a5; }
+
+    /* ===== 保管場所ドロップダウン ===== */
+    .storage-select {
+      font-size: 11px;
+      padding: 2px 3px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: #f5f5f5;
+      color: #888;
+      cursor: pointer;
+      flex-shrink: 0;
+      max-width: 58px;
+      -webkit-appearance: auto;
+    }
+    .storage-select.has-value {
+      background: #fff3cd;
+      color: #856404;
+      border-color: #ffc107;
+      font-weight: bold;
+    }
+    #copy-toast {
+      position: fixed; top: 20px; left: 50%;
+      transform: translateX(-50%);
+      background: #333; color: #fff; padding: 8px 16px;
+      border-radius: 8px; font-size: 13px; font-weight: bold;
+      z-index: 10001; opacity: 0; pointer-events: none;
+      transition: opacity 0.2s; white-space: nowrap;
+    }
+    #copy-toast.show { opacity: 1; }
+
+    .task-item.holding     { transform:scale(0.97); opacity:0.6; }
+    .delete-bar { display:none; }
+    .task-item.is-done     { opacity:0.35; }
+    .task-item.is-done .task-name { text-decoration:line-through; color:#999; }
+    .task-item.is-picked:not(.is-done) { border-left-color:#9cc; }
+    .task-item.drop-before::before { content:''; position:absolute; top:-5px; left:0; right:0; height:3px; background:#333; border-radius:2px; }
+    .task-item.drop-after::after   { content:''; position:absolute; bottom:-5px; left:0; right:0; height:3px; background:#333; border-radius:2px; }
+    .task-item.type-20ft { background:#e8f0fe; border-left-color:#1a73e8; }
+    .task-item.type-40ft { background:#fce8e8; border-left-color:#d93025; }
+    .task-item.type-20ft.is-picked:not(.is-done) { border-left-color:#7b9fd4; }
+    .task-item.type-40ft.is-picked:not(.is-done) { border-left-color:#c47a7a; }
+
+    .task-item[data-rank="1"]     { padding:10px 8px 10px 7px; }
+    .task-item[data-rank="1"] .task-name { font-size:16px; font-weight:bold; line-height:1.3; }
+    .task-item[data-rank="2"]     { padding:8px 8px 8px 7px; }
+    .task-item[data-rank="2"] .task-name { font-size:15px; font-weight:bold; line-height:1.3; }
+    .task-item[data-rank="3"]     { padding:7px 8px 7px 7px; }
+    .task-item[data-rank="3"] .task-name { font-size:14px; line-height:1.3; }
+    .task-item[data-rank="other"] { padding:6px 8px 6px 7px; }
+    .task-item[data-rank="other"] .task-name { font-size:13px; color:#444; line-height:1.3; }
+
+    .drag-handle { color:#ccc; margin-right:7px; font-size:14px; flex-shrink:0; padding:4px 2px; touch-action:none; cursor:grab; }
+    .task-body { flex:1; display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .task-name { color:#222; word-break:break-all; }
+    .task-time-badge { display:inline-block; background:rgba(0,0,0,0.07); border-radius:5px; font-size:11px; font-weight:bold; color:#333; padding:2px 6px; align-self:flex-start; }
+    .task-item.type-20ft .task-time-badge { background:rgba(26,115,232,0.13); color:#174ea6; }
+    .task-item.type-40ft .task-time-badge { background:rgba(217,48,37,0.12); color:#a50e0e; }
+
+    .axle-badge { margin-left:6px; padding:3px 7px; font-size:11px; font-weight:bold; border-radius:16px; flex-shrink:0; white-space:nowrap; }
+    .axle-badge.axle-2 { background:#d4f5df; color:#145523; }
+    .axle-badge.axle-3 { background:#ead5f5; color:#5b1fa2; }
+
+    .status-icons { display:flex; gap:3px; margin-left:6px; flex-shrink:0; }
+    .s-icon { width:28px; height:28px; border-radius:50%; border:2px solid #ddd; background:#f5f5f5; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:bold; color:#bbb; flex-shrink:0; -webkit-tap-highlight-color:transparent; transition:all 0.15s; }
+    .s-icon.pick-on   { background:#1a73e8; border-color:#1a73e8; color:#fff; }
+    .s-icon.return-on { background:#188038; border-color:#188038; color:#fff; }
+
+    .delete-bar { position:absolute; bottom:0; left:0; height:2px; width:0%; background:#d93025; border-radius:0 0 10px 10px; transition:width linear; }
+
+    #drag-ghost { position:fixed; pointer-events:none; z-index:9999; display:none; background:#fff; border-radius:10px; align-items:center; box-shadow:0 8px 24px rgba(0,0,0,0.2); opacity:0.95; }
+    #empty-msg { text-align:center; color:#bbb; font-size:14px; margin-top:40px; display:none; }
+
+    /* ===== トースト ===== */
+    #undo-toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%) translateY(100px); background:#222; color:#fff; padding:12px 16px; border-radius:10px; display:flex; align-items:center; gap:12px; z-index:10000; box-shadow:0 4px 20px rgba(0,0,0,0.4); transition:transform 0.3s, opacity 0.3s; opacity:0; pointer-events:none; min-width:240px; max-width:90vw; }
+    #undo-toast.show { transform:translateX(-50%) translateY(0); opacity:1; pointer-events:all; }
+    #undo-toast-text { flex:1; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #undo-toast-bar  { position:absolute; bottom:0; left:0; height:3px; background:#1a73e8; border-radius:0 0 10px 10px; width:100%; transition:width linear; }
+    #btn-undo { padding:7px 12px; font-size:13px; font-weight:bold; background:#1a73e8; color:#fff; border:none; border-radius:7px; cursor:pointer; white-space:nowrap; flex-shrink:0; }
+  </style>
+</head>
+<body>
+
+<!-- ローディング画面 -->
+<div id="loading-screen">
+  <div class="loading-spinner"></div>
+  <p>データを読み込んでいます...</p>
+</div>
+
+<!-- ヘッダー -->
+<div id="header">
+  <h1>📋 海コン ToDo</h1>
+  <span id="sync-status">● 同期中</span>
+</div>
+
+<!-- 日付ナビ -->
+<div id="date-nav">
+  <button class="date-arrow" id="date-prev">◀</button>
+  <div id="date-display"></div>
+  <button class="date-arrow" id="date-next">▶</button>
+  <button id="btn-all-dates">全日程</button>
+</div>
+
+<!-- 保管場所集計バー -->
+<div id="storage-summary" style="background:#fff;border-radius:10px;padding:6px 10px;margin-bottom:6px;box-shadow:0 1px 4px rgba(0,0,0,0.08);display:flex;align-items:center;gap:4px;flex-wrap:wrap;min-height:30px;">
+  <span style="font-size:10px;color:#aaa;font-weight:bold;flex-shrink:0;">保管：</span>
+</div>
+
+<!-- モード切替 -->
+<div id="mode-tab-bar">
+  <button class="mode-tab mode-active" data-mode="manual">✏️ 手動</button>
+  <button class="mode-tab" data-mode="import">📋 インポート</button>
+  <button class="mode-tab" data-mode="backup">🗂️ 管理</button>
+</div>
+
+<!-- 手動入力 -->
+<div id="panel-manual" class="panel-card panel-active">
+  <div id="input-row">
+    <input type="text" id="task-input" placeholder="タスク内容を入力">
+    <button id="voice-btn">🎤</button>
+  </div>
+  <div id="input-hint">「20ft」「40ft」「2軸」「3軸」を入れると自動タグ付き</div>
+  <div id="datetime-row">
+    <span class="dt-label">📅</span><input type="date" id="date-input">
+    <span style="color:#ccc;flex-shrink:0;">/</span>
+    <span class="dt-label">⏰</span><input type="time" id="time-input">
+  </div>
+  <!-- コンテナ番号 -->
+  <div style="display:flex;gap:6px;align-items:center;">
+    <span class="dt-label">📦</span>
+    <input type="text" id="containerno-input" placeholder="コンテナ番号（例：ABCD1234567）"
+      style="flex:1;padding:9px 10px;font-size:14px;font-weight:bold;font-family:monospace;border:1.5px solid #ddd;border-radius:8px;outline:none;background:#fafafa;color:#222;letter-spacing:0.05em;">
+  </div>
+  <div id="tag-row">
+    <div class="tag-group">
+      <button class="tag-btn" data-group="container" data-value="20ft">20ft</button>
+      <button class="tag-btn" data-group="container" data-value="40ft">40ft</button>
+    </div>
+    <div class="tag-sep"></div>
+    <div class="tag-group">
+      <button class="tag-btn" data-group="axle" data-value="2軸">2軸</button>
+      <button class="tag-btn" data-group="axle" data-value="3軸">3軸</button>
+    </div>
+    <button id="add-btn">追加</button>
+  </div>
+</div>
+
+<!-- インポート -->
+<div id="panel-import" class="panel-card">
+  <div class="import-guide">
+    <strong>📌 列順（タブ区切り）</strong>
+    <div class="col-row">
+      <span class="col-tag col-required">ピック✓</span>
+      <span class="col-tag col-required">返却✓</span>
+      <span class="col-tag col-required">日付</span>
+      <span class="col-tag">備考</span>
+      <span class="col-tag col-required">会社名</span>
+      <span class="col-tag">市区町村</span>
+      <span class="col-tag">時間</span>
+      <span class="col-tag">搬出</span>
+      <span class="col-tag">搬入</span>
+      <span class="col-tag col-required">サイズ</span>
+      <span class="col-tag col-required">軸</span>
+    </div>
+  </div>
+  <div class="import-opt-row">
+    <input type="checkbox" id="chk-skip-ise" checked style="width:17px;height:17px;cursor:pointer;flex-shrink:0;">
+    <label for="chk-skip-ise">伊勢回送を除外する</label>
+  </div>
+  <div class="import-opt-row">
+    <input type="checkbox" id="chk-skip-done" checked style="width:17px;height:17px;cursor:pointer;flex-shrink:0;">
+    <label for="chk-skip-done">P・R両方済みは除外する</label>
+  </div>
+  <textarea id="import-textarea" placeholder="スプレッドシートをコピー＆ペースト" style="width:100%;height:180px;font-size:12px;border:1.5px solid #ddd;border-radius:8px;padding:8px;background:#fafafa;resize:vertical;font-family:monospace;color:#333;line-height:1.4;outline:none;"></textarea>
+  <div id="import-preview"></div>
+  <div id="import-actions">
+    <button id="btn-parse-import">🔍 読み込む</button>
+    <button id="btn-confirm-import" disabled>追加する（0件）</button>
+  </div>
+  <div id="import-msg"></div>
+</div>
+
+<!-- 管理パネル -->
+<div id="panel-backup" class="panel-card">
+  <div class="bk-title">🗑️ リストを空にする</div>
+  <button id="btn-clear-all" style="padding:11px;font-size:13px;font-weight:bold;background:#fce8e8;color:#d93025;border:none;border-radius:9px;cursor:pointer;width:100%;">
+    📋 タスクを全件削除（ゴミ箱に移動）
+  </button>
+  <div class="bk-title">🗑️ ゴミ箱</div>
+  <div class="trash-header">
+    <span id="trash-count-label" class="trash-count-badge">0件</span>
+    <span style="font-size:10px;color:#bbb;">削除したタスクを復元できます（30日保管）</span>
+  </div>
+  <div class="trash-list" id="trash-list"></div>
+  <button id="btn-clear-trash" style="padding:9px;font-size:12px;font-weight:bold;background:#fce8e8;color:#d93025;border:none;border-radius:8px;cursor:pointer;width:100%;">ゴミ箱を空にする</button>
+  <div id="backup-msg"></div>
+</div>
+
+<div id="voice-status"></div>
+
+<!-- フィルターバー -->
+<!-- 検索バー -->
+<div id="search-bar" style="background:#fff;border-radius:10px;padding:8px 10px;margin-bottom:6px;box-shadow:0 1px 4px rgba(0,0,0,0.08);display:flex;align-items:center;gap:7px;">
+  <span style="font-size:15px;flex-shrink:0;">🔍</span>
+  <input type="text" id="search-input" placeholder="会社名・コンテナ番号で検索…"
+    style="flex:1;border:none;outline:none;font-size:14px;background:transparent;color:#333;">
+  <button id="search-clear" style="display:none;padding:3px 8px;font-size:12px;font-weight:bold;background:#eee;border:none;border-radius:12px;color:#888;cursor:pointer;">✕</button>
+</div>
+
+<div id="filter-bar">
+  <span style="font-size:11px;color:#aaa;font-weight:bold;flex-shrink:0;">絞込：</span>
+  <button class="filter-btn f-all filter-active" data-fgroup="all">全て</button>
+  <button class="filter-btn" data-fgroup="container" data-fvalue="20ft">20ft</button>
+  <button class="filter-btn" data-fgroup="container" data-fvalue="40ft">40ft</button>
+  <div class="tag-sep"></div>
+  <button class="filter-btn" data-fgroup="axle" data-fvalue="2軸">2軸</button>
+  <button class="filter-btn" data-fgroup="axle" data-fvalue="3軸">3軸</button>
+  <span id="task-count"></span>
+  <div id="status-filter-row">
+    <span class="sf-label">状態：</span>
+    <button class="sf-btn sf-active" data-sf="active">未完了</button>
+    <button class="sf-btn" data-sf="unpick">未ピック</button>
+    <button class="sf-btn" data-sf="picked">ピック済</button>
+    <button class="sf-btn" data-sf="done">完了済</button>
+    <button class="sf-btn" data-sf="all">全て</button>
+  </div>
+</div>
+
+<!-- 号車・シャーシコードの datalist -->
+<datalist id="codes">
+  <option value="双運20-52">
+  <option value="双運40-53">
+  <option value="双運40-58">
+  <option value="K2-2">
+  <option value="K2-4">
+  <option value="K2-5">
+  <option value="K2-6">
+  <option value="K3-2">
+  <option value="K3-3">
+  <option value="K3-4">
+  <option value="K3-6">
+  <option value="M2-1">
+  <option value="M2-3">
+  <option value="M2-5">
+  <option value="M2-6">
+  <option value="M2-8">
+  <option value="M2-10">
+  <option value="M2-11">
+  <option value="M2-13">
+  <option value="M2-14">
+  <option value="M2-15">
+  <option value="M3-1">
+  <option value="M3-2">
+  <option value="M3-3">
+  <option value="M3-5">
+  <option value="M3-7">
+  <option value="M3-8">
+  <option value="M3-9">
+</datalist>
+
+<div id="task-list"></div>
+<div id="empty-msg">タスクがありません</div>
+<div id="drag-ghost"></div>
+
+<div id="copy-toast">📋 コピーしました</div>
+
+<div id="undo-toast">
+  <span id="undo-toast-text">削除しました</span>
+  <button id="btn-undo">元に戻す</button>
+  <div id="undo-toast-bar"></div>
+</div>
+
+<script>
+  // ======================================================
+  // Firebase 初期化
+  // ======================================================
+  var firebaseConfig = {
+    apiKey:            "AIzaSyBJuWXtHRON1k6lKK2shCUmPxbt3uwSBFE",
+    authDomain:        "kaikontodo.firebaseapp.com",
+    projectId:         "kaikontodo",
+    storageBucket:     "kaikontodo.firebasestorage.app",
+    messagingSenderId: "703465238622",
+    appId:             "1:703465238622:web:11aba4e5284d78427444cf",
+    measurementId:     "G-1YZ219648V"
+  };
+
+  var db, TASKS_DOC, TRASH_DOC;
+  try {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    TASKS_DOC = db.collection('kaikon').doc('tasks');
+    TRASH_DOC  = db.collection('kaikon').doc('trash');
+  } catch(e) {
+    console.error('Firebase init error:', e);
+    var ls = document.getElementById('loading-screen');
+    ls.querySelector('p').textContent = '⚠️ Netlifyから開いてください';
+    ls.querySelector('p').style.color = '#d93025';
+    ls.querySelector('.loading-spinner').style.display = 'none';
+  }
+
+  // Firestoreのドキュメント参照（全データを1ドキュメントに集約）
+  var TASKS_DOC = db.collection('kaikon').doc('tasks');
+  var TRASH_DOC  = db.collection('kaikon').doc('trash');
+
+  // ======================================================
+  // インメモリキャッシュ（onSnapshotで常に最新を保持）
+  // ======================================================
+  var _tasks = [];
+  var _trash = [];
+  var _firstLoad = true;
+
+  // ===== タスクのリアルタイム同期 =====
+  if (TASKS_DOC) {
+    TASKS_DOC.onSnapshot(function(snap) {
+      _tasks = snap.exists ? (snap.data().list || []) : [];
+      if (_firstLoad) {
+        _firstLoad = false;
+        document.getElementById('loading-screen').classList.add('hidden');
+      }
+      setSyncStatus('ok');
+      renderTasks();
+    }, function(err) {
+      console.error('Firestore error:', err);
+      setSyncStatus('error');
+      document.getElementById('loading-screen').classList.add('hidden');
+    });
+  }
+
+  // ===== ゴミ箱のリアルタイム同期 =====
+  if (TRASH_DOC) {
+    TRASH_DOC.onSnapshot(function(snap) {
+      _trash = snap.exists ? (snap.data().items || []) : [];
+      var lbl = document.getElementById('trash-count-label');
+      if (lbl) lbl.textContent = _trash.length + '件';
+    });
+  }
+
+  // ===== 同期ステータス表示 =====
+  function setSyncStatus(state) {
+    var el = document.getElementById('sync-status');
+    if (state === 'ok')      { el.textContent = '● 同期済み'; el.className = ''; el.style.cssText = 'font-size:10px;padding:3px 8px;border-radius:10px;font-weight:bold;background:#d4f5df;color:#145523;white-space:nowrap;flex-shrink:0;'; }
+    if (state === 'saving')  { el.textContent = '● 保存中…'; el.style.cssText = 'font-size:10px;padding:3px 8px;border-radius:10px;font-weight:bold;background:#fff3cd;color:#856404;white-space:nowrap;flex-shrink:0;'; }
+    if (state === 'error')   { el.textContent = '● オフライン'; el.style.cssText = 'font-size:10px;padding:3px 8px;border-radius:10px;font-weight:bold;background:#fce8e8;color:#d93025;white-space:nowrap;flex-shrink:0;'; }
+  }
+
+  // ======================================================
+  // データ操作（Firestore経由）
+  // ======================================================
+  function loadTasks() { return _tasks; }
+
+  function saveTasks(tasks) {
+    _tasks = tasks;
+    if (!TASKS_DOC) return;
+    setSyncStatus('saving');
+    TASKS_DOC.set({ list: tasks })
+      .then(function() { setSyncStatus('ok'); })
+      .catch(function(e) { console.error(e); setSyncStatus('error'); });
+  }
+
+  function loadTrash() {
+    var limit = Date.now() - 30*24*60*60*1000;
+    return _trash.filter(function(i) { return i.deletedAt > limit; });
+  }
+
+  function saveTrash(items) {
+    _trash = items;
+    if (!TRASH_DOC) return;
+    TRASH_DOC.set({ items: items })
+      .catch(function(e) { console.error(e); });
+  }
+
+  // ======================================================
+  // 状態変数
+  // ======================================================
+  var currentDate       = getTodayStr();
+  var filterContainer   = null;
+  var filterAxle        = null;
+  var filterStatus      = 'active';
+  var selectedContainer = null;
+  var selectedAxle      = null;
+  var currentMode       = 'manual';
+  var parsedImportTasks = [];
+  var toastTimer        = null;
+
+  // ======================================================
+  // 日付ユーティリティ
+  // ======================================================
+  function pad(n){ return n<10?'0'+n:String(n); }
+  function getTodayStr(){ var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+  function offsetDateStr(s,days){ var d=new Date(s+'T00:00:00'); d.setDate(d.getDate()+days); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+  var DOW=['日','月','火','水','木','金','土'];
+  function formatDateLabel(s){ if(!s)return'全日程'; var d=new Date(s+'T00:00:00'); return(d.getMonth()+1)+'/'+d.getDate()+'('+DOW[d.getDay()]+')'; }
+  function formatDateTime(ts){ var d=new Date(ts); return(d.getMonth()+1)+'/'+d.getDate()+' '+pad(d.getHours())+':'+pad(d.getMinutes()); }
+
+  // ======================================================
+  // ID生成
+  // ======================================================
+  var _idBase=Date.now(), _idCnt=0;
+  function nextId(){ return _idBase+(++_idCnt); }
+
+  // ======================================================
+  // ゴミ箱・削除・復元
+  // ======================================================
+  function moveToTrash(id){
+    var tasks=loadTasks();
+    var idx=tasks.findIndex(function(t){ return t.id===id; });
+    if(idx===-1) return;
+    var task=tasks.splice(idx,1)[0];
+    saveTasks(tasks);
+    var trash=loadTrash();
+    trash.push({ trashId:nextId(), task:task, deletedAt:Date.now() });
+    saveTrash(trash);
+    showUndoToast(task.name);
+  }
+
+  function clearAllTasks(){
+    var tasks=loadTasks();
+    if(!tasks.length){ showBackupMsg('タスクはすでに空です','#aaa'); return; }
+    var trash=loadTrash();
+    tasks.forEach(function(t){ trash.push({ trashId:nextId(), task:t, deletedAt:Date.now() }); });
+    saveTrash(trash);
+    saveTasks([]);
+    showBackupMsg('✅ '+tasks.length+'件を削除しました（ゴミ箱から復元可）','#188038');
+  }
+
+  function restoreFromTrash(trashId){
+    var trash=loadTrash();
+    var idx=trash.findIndex(function(i){ return i.trashId===trashId; });
+    if(idx===-1) return;
+    var entry=trash.splice(idx,1)[0];
+    saveTrash(trash);
+    var tasks=loadTasks();
+    tasks.push(entry.task);
+    saveTasks(tasks);
+    showBackupMsg('✅ 「'+entry.task.name.slice(0,15)+'」を復元しました','#188038');
+  }
+
+  // ======================================================
+  // トースト（元に戻す）
+  // ======================================================
+  var TOAST_MS=6000;
+  function showUndoToast(name){
+    if(toastTimer) clearTimeout(toastTimer);
+    var toast=document.getElementById('undo-toast');
+    var bar=document.getElementById('undo-toast-bar');
+    document.getElementById('undo-toast-text').textContent='🗑️ '+name.slice(0,22)+(name.length>22?'…':'');
+    bar.style.transition='none'; bar.style.width='100%';
+    toast.classList.add('show');
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){
+      bar.style.transition='width '+TOAST_MS+'ms linear'; bar.style.width='0%';
+    }); });
+    toastTimer=setTimeout(function(){ toast.classList.remove('show'); }, TOAST_MS);
+  }
+  document.getElementById('btn-undo').addEventListener('click', function(){
+    document.getElementById('undo-toast').classList.remove('show');
+    if(toastTimer){ clearTimeout(toastTimer); toastTimer=null; }
+    var trash=loadTrash();
+    if(trash.length) restoreFromTrash(trash[trash.length-1].trashId);
+  });
+
+  // ======================================================
+  // モード切替
+  // ======================================================
+  document.querySelectorAll('.mode-tab').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      currentMode=btn.dataset.mode;
+      document.querySelectorAll('.mode-tab').forEach(function(b){ b.classList.toggle('mode-active', b.dataset.mode===currentMode); });
+      document.getElementById('panel-manual').classList.toggle('panel-active', currentMode==='manual');
+      document.getElementById('panel-import').classList.toggle('panel-active', currentMode==='import');
+      document.getElementById('panel-backup').classList.toggle('panel-active', currentMode==='backup');
+      if(currentMode==='backup') renderTrashList();
+    });
+  });
+
+  // ======================================================
+  // 日付ナビ
+  // ======================================================
+  function updateDateNav(){
+    var today=getTodayStr();
+    var display=document.getElementById('date-display');
+    if(!currentDate){
+      display.innerHTML='<span style="color:#888;font-size:14px;">全日程</span>';
+      document.getElementById('btn-all-dates').classList.add('all-active');
+    } else {
+      var mark=currentDate===today?'<span class="today-label">今日</span>':'';
+      display.innerHTML=formatDateLabel(currentDate)+mark;
+      document.getElementById('btn-all-dates').classList.remove('all-active');
+    }
+    document.getElementById('date-input').value=currentDate||today;
+  }
+  document.getElementById('date-prev').addEventListener('click', function(){ currentDate=offsetDateStr(currentDate||getTodayStr(),-1); updateDateNav(); renderTasks(); });
+  document.getElementById('date-next').addEventListener('click', function(){ currentDate=offsetDateStr(currentDate||getTodayStr(),1);  updateDateNav(); renderTasks(); });
+  document.getElementById('btn-all-dates').addEventListener('click', function(){ currentDate=currentDate?null:getTodayStr(); updateDateNav(); renderTasks(); });
+
+  // ======================================================
+  // 入力タグ
+  // ======================================================
+  function updateTagBtns(group,selected){
+    document.querySelectorAll('.tag-btn[data-group="'+group+'"]').forEach(function(btn){ btn.classList.toggle('tag-active', btn.dataset.value===selected); });
+  }
+  function autoDetect(text){
+    if     (/20\s*ft/i.test(text)){ selectedContainer='20ft'; updateTagBtns('container','20ft'); }
+    else if(/40\s*ft/i.test(text)){ selectedContainer='40ft'; updateTagBtns('container','40ft'); }
+    if     (/[２2]軸/.test(text)) { selectedAxle='2軸'; updateTagBtns('axle','2軸'); }
+    else if(/[３3]軸/.test(text)) { selectedAxle='3軸'; updateTagBtns('axle','3軸'); }
+  }
+  document.getElementById('task-input').addEventListener('input', function(){ autoDetect(this.value); });
+  document.querySelectorAll('.tag-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var g=btn.dataset.group, v=btn.dataset.value;
+      if(g==='container'){ selectedContainer=selectedContainer===v?null:v; updateTagBtns('container',selectedContainer); }
+      else               { selectedAxle=selectedAxle===v?null:v;           updateTagBtns('axle',selectedAxle); }
+    });
+  });
+
+  var filterText = '';
+
+  document.getElementById('search-input').addEventListener('input', function(){
+    filterText = this.value.trim();
+    document.getElementById('search-clear').style.display = filterText ? 'block' : 'none';
+    renderTasks();
+  });
+  document.getElementById('search-clear').addEventListener('click', function(){
+    filterText = '';
+    document.getElementById('search-input').value = '';
+    this.style.display = 'none';
+    renderTasks();
+  });
+
+  // ======================================================
+  // フィルター
+  // ======================================================
+  function updateFilterBtns(){
+    document.querySelector('.f-all').classList.toggle('filter-active', !filterContainer&&!filterAxle);
+    document.querySelectorAll('.filter-btn[data-fgroup="container"]').forEach(function(btn){ btn.classList.toggle('filter-active', btn.dataset.fvalue===filterContainer); });
+    document.querySelectorAll('.filter-btn[data-fgroup="axle"]').forEach(function(btn){ btn.classList.toggle('filter-active', btn.dataset.fvalue===filterAxle); });
+  }
+  document.querySelectorAll('.filter-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var fg=btn.dataset.fgroup;
+      if(fg==='all')          { filterContainer=null; filterAxle=null; }
+      else if(fg==='container'){ filterContainer=filterContainer===btn.dataset.fvalue?null:btn.dataset.fvalue; }
+      else if(fg==='axle')    { filterAxle=filterAxle===btn.dataset.fvalue?null:btn.dataset.fvalue; }
+      updateFilterBtns(); renderTasks();
+    });
+  });
+  document.querySelectorAll('.sf-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      filterStatus=btn.dataset.sf;
+      document.querySelectorAll('.sf-btn').forEach(function(b){ b.classList.toggle('sf-active', b.dataset.sf===filterStatus); });
+      renderTasks();
+    });
+  });
+  function applyFilters(tasks){
+    var result=tasks.filter(function(t){
+      if(filterContainer && t.container!==filterContainer) return false;
+      if(filterAxle && t.axle!==filterAxle) return false;
+      if(filterText){
+        var q=filterText.toLowerCase();
+        var hit=(t.name&&t.name.toLowerCase().indexOf(q)!==-1)||
+                (t.containerNo&&t.containerNo.toLowerCase().indexOf(q)!==-1)||
+                (t.storage&&t.storage.indexOf(filterText)!==-1);
+        if(!hit) return false;
+      }
+      return true;
+    });
+    if(filterStatus==='active') return result.filter(function(t){ return !(t.picked&&t.returned); });
+    if(filterStatus==='unpick') return result.filter(function(t){ return !t.picked; });
+    if(filterStatus==='picked') return result.filter(function(t){ return t.picked&&!t.returned; });
+    if(filterStatus==='done')   return result.filter(function(t){ return t.picked&&t.returned; });
+    return result;
+  }
+
+  // ======================================================
+  // タスク追加・並び替え・ステータス
+  // ======================================================
+  function addTask(){
+    var nameEl=document.getElementById('task-input');
+    var name=nameEl.value.trim();
+    if(!name){ alert('タスク名を入力してください'); return; }
+    autoDetect(name);
+    var tasks=loadTasks();
+    tasks.push({ id:nextId(), name:name,
+      date:document.getElementById('date-input').value||getTodayStr(),
+      time:document.getElementById('time-input').value||null,
+      containerNo:document.getElementById('containerno-input').value.trim()||null,
+      container:selectedContainer, axle:selectedAxle,
+      picked:false, returned:false });
+    saveTasks(tasks);
+    nameEl.value='';
+    document.getElementById('time-input').value='';
+    document.getElementById('containerno-input').value='';
+    selectedContainer=null; selectedAxle=null;
+    updateTagBtns('container',null); updateTagBtns('axle',null);
+    nameEl.focus();
+  }
+
+  function reorderTask(id,newIndex){
+    var tasks=loadTasks();
+    var oldIndex=tasks.findIndex(function(t){ return t.id===id; });
+    if(oldIndex===-1) return;
+    var removed=tasks.splice(oldIndex,1)[0];
+    var insertAt=Math.max(0,Math.min(oldIndex<newIndex?newIndex-1:newIndex,tasks.length));
+    tasks.splice(insertAt,0,removed);
+    saveTasks(tasks);
+  }
+
+  function toggleStatus(id,field){
+    var tasks=loadTasks();
+    var task=tasks.find(function(t){ return t.id===id; });
+    if(!task) return;
+    task[field]=!task[field];
+    if(field==='returned'&&task.returned) task.picked=true;
+    saveTasks(tasks);
+  }
+
+  // 単一フィールドの更新（ドロップダウン等）
+  function updateTaskField(id, field, value){
+    var tasks=loadTasks();
+    var task=tasks.find(function(t){ return t.id===id; });
+    if(!task) return;
+    task[field]=value;
+    saveTasks(tasks);
+  }
+
+  // ======================================================
+  // インポート
+  // ======================================================
+  function parseTSV(text){
+    var results=[], today=getTodayStr();
+    var skipIse  = document.getElementById('chk-skip-ise').checked;
+    var skipDone = document.getElementById('chk-skip-done').checked;
+    text.split('\n').forEach(function(line){
+      line=line.replace(/\r$/,'');
+      if(!line.trim()) return;
+      if(line.indexOf('デバンニング')!==-1||line.indexOf('搬出')!==-1) return;
+      var cols=line.split('\t');
+      if(cols.length<3) return;
+      var o=0;
+      if(/^\d{4}[\/\-]/.test((cols[2]||'').trim()))      o=2;
+      else if(/^\d{4}[\/\-]/.test((cols[0]||'').trim())) o=0;
+      else return;
+      function isTruthy(v){ v=(v||'').trim(); return v!==''&&v!=='FALSE'&&v!=='false'&&v!=='0'; }
+      var importPicked   = (o===2) && isTruthy(cols[0]);
+      var importReturned = (o===2) && isTruthy(cols[1]);
+      if(importReturned) importPicked=true;
+      if(skipDone && importPicked && importReturned) return;
+      var rawDate=(cols[o]||'').trim();
+      var date=rawDate.replace(/\//g,'-').replace(/^(\d{4})-(\d{1,2})-(\d{1,2})$/,function(m,y,mo,d){ return y+'-'+(mo.length<2?'0'+mo:mo)+'-'+(d.length<2?'0'+d:d); });
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) date=today;
+      var memo=(cols[o+1]||'').trim(), company=(cols[o+2]||'').trim(), city=(cols[o+3]||'').trim();
+      if(!company&&!city) return;
+      if(skipIse && company.indexOf('伊勢回送')!==-1) return;
+      var rawTime=(cols[o+4]||'').trim(), time=null;
+      if(/^\d{1,2}:\d{2}$/.test(rawTime)){ var tp=rawTime.split(':'); time=(tp[0].length<2?'0'+tp[0]:tp[0])+':'+tp[1]; }
+      var from=(cols[o+5]||'').trim(), to=(cols[o+6]||'').trim();
+      var rawSize=(cols[o+7]||'').trim().replace(/ft$/i,'');
+      var container=rawSize==='20'?'20ft':rawSize==='40'?'40ft':null;
+      var rawAxle=(cols[o+8]||'').trim();
+      var axle=/[２2]軸/.test(rawAxle)?'2軸':/[３3]軸/.test(rawAxle)?'3軸':null;
+      var containerNo=(cols[o+9]||'').trim()||null;
+      var kanriNo=(cols[o+11]||'').trim()||null;  // N列：管理番号
+      var pickNo=(cols[o+14]||'').trim()||null;   // Q列：ピックNo
+      var parts=[];
+      if(company) parts.push(company);
+      if(city)    parts.push(city);
+      if(from||to) parts.push((from||'')+'→'+(to||''));
+      if(memo)    parts.push('※'+memo);
+      var name=parts.join('  ');
+      if(!name) return;
+      results.push({ id:nextId(), name:name, date:date, time:time, containerNo:containerNo, kanriNo:kanriNo, pickNo:pickNo, container:container, axle:axle, picked:importPicked, returned:importReturned });
+    });
+    return results;
+  }
+
+  document.getElementById('btn-parse-import').addEventListener('click', function(){
+    var text=document.getElementById('import-textarea').value.trim();
+    var msg=document.getElementById('import-msg');
+    if(!text){ msg.style.color='#d93025'; msg.textContent='テキストを貼り付けてください'; return; }
+    parsedImportTasks=parseTSV(text);
+    msg.textContent='';
+    var preview=document.getElementById('import-preview');
+    var confirmBtn=document.getElementById('btn-confirm-import');
+    if(!parsedImportTasks.length){
+      preview.style.display='none'; confirmBtn.disabled=true; confirmBtn.textContent='追加する（0件）';
+      msg.style.color='#d93025'; msg.textContent='認識できる行がありませんでした'; return;
+    }
+    preview.style.display='block'; preview.innerHTML='';
+    parsedImportTasks.forEach(function(t){
+      var row=document.createElement('div'); row.className='preview-item';
+      var de=document.createElement('span'); de.className='preview-date'; de.textContent=formatDateLabel(t.date);
+      var te=document.createElement('span'); te.className='preview-time'; te.textContent=t.time||'--:--';
+      var ne=document.createElement('span'); ne.className='preview-name'; ne.textContent=t.name;
+      var tg=document.createElement('span'); tg.className='preview-tags';
+      if(t.container){ var c=document.createElement('span'); c.className='preview-tag '+(t.container==='20ft'?'pt-20ft':'pt-40ft'); c.textContent=t.container; tg.appendChild(c); }
+      if(t.axle)     { var a=document.createElement('span'); a.className='preview-tag '+(t.axle==='2軸'?'pt-2jiku':'pt-3jiku'); a.textContent=t.axle; tg.appendChild(a); }
+      row.appendChild(de); row.appendChild(te); row.appendChild(ne); row.appendChild(tg);
+      preview.appendChild(row);
+    });
+    confirmBtn.disabled=false; confirmBtn.textContent='追加する（'+parsedImportTasks.length+'件）';
+  });
+
+  document.getElementById('btn-confirm-import').addEventListener('click', function(){
+    if(!parsedImportTasks.length) return;
+    var tasks=loadTasks();
+    parsedImportTasks.forEach(function(t){ tasks.push(t); });
+    saveTasks(tasks);
+    var msg=document.getElementById('import-msg');
+    msg.style.color='#188038'; msg.textContent='✅ '+parsedImportTasks.length+'件を追加しました';
+    parsedImportTasks=[];
+    document.getElementById('import-textarea').value='';
+    document.getElementById('import-preview').style.display='none';
+    document.getElementById('btn-confirm-import').disabled=true;
+    document.getElementById('btn-confirm-import').textContent='追加する（0件）';
+    setTimeout(function(){ msg.textContent=''; }, 3000);
+  });
+
+  // ======================================================
+  // 管理パネル
+  // ======================================================
+  document.getElementById('btn-clear-all').addEventListener('click', function(){ clearAllTasks(); });
+
+  function showBackupMsg(text,color){
+    var el=document.getElementById('backup-msg'); el.style.color=color||'#188038'; el.textContent=text;
+    setTimeout(function(){ el.textContent=''; }, 4000);
+  }
+
+  function renderTrashList(){
+    var trash=loadTrash();
+    var list=document.getElementById('trash-list');
+    document.getElementById('trash-count-label').textContent=trash.length+'件';
+    list.innerHTML='';
+    if(!trash.length){ var em=document.createElement('div'); em.className='trash-empty-msg'; em.textContent='削除済みのタスクはありません'; list.appendChild(em); return; }
+    trash.slice().reverse().forEach(function(entry){
+      var row=document.createElement('div'); row.className='trash-item';
+      var body=document.createElement('div'); body.className='trash-item-body';
+      var nm=document.createElement('div'); nm.className='trash-item-name'; nm.textContent=entry.task.name;
+      var mt=document.createElement('div'); mt.className='trash-item-meta'; mt.textContent=(entry.task.date?formatDateLabel(entry.task.date)+' ':'')+formatDateTime(entry.deletedAt);
+      body.appendChild(nm); body.appendChild(mt);
+      var btn=document.createElement('button'); btn.className='trash-restore-btn'; btn.textContent='復元';
+      btn.addEventListener('click', function(){ restoreFromTrash(entry.trashId); });
+      row.appendChild(body); row.appendChild(btn); list.appendChild(row);
+    });
+  }
+
+  document.getElementById('btn-clear-trash').addEventListener('click', function(){
+    if(!loadTrash().length){ showBackupMsg('ゴミ箱はすでに空です','#aaa'); return; }
+    saveTrash([]); renderTrashList(); showBackupMsg('🗑️ ゴミ箱を空にしました','#888');
+  });
+
+  // ======================================================
+  // ゴースト・ドロップ
+  // ======================================================
+  var ghostEl=document.getElementById('drag-ghost');
+  function showGhost(src){ var r=src.getBoundingClientRect(); ghostEl.innerHTML=src.innerHTML; ghostEl.style.width=r.width+'px'; ghostEl.style.height=r.height+'px'; ghostEl.style.left=r.left+'px'; ghostEl.style.top=r.top+'px'; ghostEl.style.padding=window.getComputedStyle(src).padding; ghostEl.style.display='flex'; }
+  function moveGhost(y){ ghostEl.style.top=(y-ghostEl.offsetHeight/2)+'px'; }
+  function hideGhost(){ ghostEl.style.display='none'; }
+  function clearIndicators(){ document.querySelectorAll('.drop-before,.drop-after').forEach(function(el){ el.classList.remove('drop-before','drop-after'); }); }
+  function getDropIndex(clientY,draggedId){
+    var others=Array.from(document.querySelectorAll('#task-list .task-item')).filter(function(el){ return parseInt(el.dataset.id)!==draggedId; });
+    clearIndicators();
+    var tasks=loadTasks();
+    for(var i=0;i<others.length;i++){
+      var r=others[i].getBoundingClientRect();
+      if(clientY<r.top+r.height/2){ others[i].classList.add('drop-before'); var eid=parseInt(others[i].dataset.id); return tasks.findIndex(function(t){ return t.id===eid; }); }
+    }
+    if(others.length) others[others.length-1].classList.add('drop-after');
+    return tasks.length;
+  }
+
+  // ======================================================
+  // クリップボードコピー
+  // ======================================================
+  var copyToastTimer = null;
+  function copyToClipboard(text) {
+    var toast = document.getElementById('copy-toast');
+    toast.textContent = '📋 コピー：' + text;
+    function showToast() {
+      toast.classList.add('show');
+      if (copyToastTimer) clearTimeout(copyToastTimer);
+      copyToastTimer = setTimeout(function() { toast.classList.remove('show'); }, 2000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(showToast).catch(function() { fallbackCopy(text, showToast); });
+    } else { fallbackCopy(text, showToast); }
+  }
+  function fallbackCopy(text, cb) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0;';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch(e) {}
+    document.body.removeChild(ta); if (cb) cb();
+  }
+
+  // ======================================================
+  // ドラッグのみ（長押し削除は廃止）
+  // ======================================================
+  var DRAG_PX=8;
+  function setupInteraction(item, taskId){
+    var handle=item.querySelector('.drag-handle');
+    var startX, startY, isDragging=false, dropIndex=-1;
+
+    handle.addEventListener('pointerdown', function(e){
+      e.stopPropagation();
+      startX=e.clientX; startY=e.clientY; isDragging=false; dropIndex=-1;
+      handle.setPointerCapture(e.pointerId);
+      handle.addEventListener('pointermove', onDragMove);
+      handle.addEventListener('pointerup', onDragUp);
+      handle.addEventListener('pointercancel', onDragUp);
+      e.preventDefault();
+    });
+
+    function onDragMove(e){
+      var dx=Math.abs(e.clientX-startX), dy=Math.abs(e.clientY-startY);
+      if(!isDragging&&(dx>DRAG_PX||dy>DRAG_PX)){ isDragging=true; item.classList.add('is-dragging'); showGhost(item); }
+      if(!isDragging) return;
+      moveGhost(e.clientY); dropIndex=getDropIndex(e.clientY, taskId);
+    }
+
+    function onDragUp(){
+      handle.removeEventListener('pointermove', onDragMove);
+      handle.removeEventListener('pointerup', onDragUp);
+      handle.removeEventListener('pointercancel', onDragUp);
+      if(!isDragging) return;
+      item.classList.remove('is-dragging'); hideGhost(); clearIndicators();
+      if(dropIndex>=0) reorderTask(taskId, dropIndex);
+    }
+  }
+
+  // ======================================================
+  // 音声入力
+  // ======================================================
+  var voiceBtn=document.getElementById('voice-btn'), voiceStatus=document.getElementById('voice-status');
+  var recognition=null, isRecording=false;
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ voiceBtn.classList.add('unsupported'); voiceBtn.disabled=true; }
+  else{
+    recognition=new SR(); recognition.lang='ja-JP'; recognition.interimResults=true; recognition.continuous=false;
+    recognition.onresult=function(e){ var t=''; for(var i=0;i<e.results.length;i++) t+=e.results[i][0].transcript; document.getElementById('task-input').value=t; autoDetect(t); };
+    recognition.onstart=function(){ isRecording=true; voiceBtn.classList.add('recording'); voiceBtn.textContent='⏹'; voiceStatus.textContent='● 録音中…'; };
+    recognition.onend=function(){ isRecording=false; voiceBtn.classList.remove('recording'); voiceBtn.textContent='🎤'; voiceStatus.textContent=''; };
+    recognition.onerror=function(e){ var m={'no-speech':'音声未検出','not-allowed':'マイク許可が必要','aborted':''}; voiceStatus.textContent=m[e.error]||'エラー'; };
+    voiceBtn.addEventListener('click', function(){ if(isRecording) recognition.stop(); else{ voiceStatus.textContent=''; try{ recognition.start(); }catch(e){} } });
+  }
+
+  // ======================================================
+  // 保管場所集計
+  // ======================================================
+  var STORAGE_LOCATIONS = ['弥富','飛島','みよし','千歳','カスミ','本社'];
+  var STORAGE_COLORS = {
+    '弥富':  {bg:'#e8f0fe', color:'#1a4fa0'},
+    '飛島':  {bg:'#fce8e8', color:'#a50e0e'},
+    'みよし':{bg:'#d4f5df', color:'#145523'},
+    '千歳':  {bg:'#ead5f5', color:'#5b1fa2'},
+    'カスミ':{bg:'#fff3cd', color:'#856404'},
+    '本社':  {bg:'#f0f0f0', color:'#555'}
+  };
+
+  function renderStorageSummary(){
+    var all = loadTasks().filter(function(t){ return !t.returned; }); // 返却済みは除外
+    var counts = {};
+    STORAGE_LOCATIONS.forEach(function(loc){ counts[loc] = 0; });
+    all.forEach(function(t){ if(t.storage && counts[t.storage]!==undefined) counts[t.storage]++; });
+
+    var bar = document.getElementById('storage-summary');
+    // ラベル以外をクリア
+    bar.innerHTML = '<span style="font-size:10px;color:#aaa;font-weight:bold;flex-shrink:0;">保管：</span>';
+
+    STORAGE_LOCATIONS.forEach(function(loc){
+      var n = counts[loc];
+      var cl = STORAGE_COLORS[loc];
+      var chip = document.createElement('span');
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px;background:'+(n>0?cl.bg:'#f5f5f5')+';color:'+(n>0?cl.color:'#bbb')+';border-radius:10px;padding:2px 7px;font-size:11px;font-weight:bold;white-space:nowrap;';
+      chip.innerHTML = loc+'<b style="font-size:12px;margin-left:2px;">'+ n +'</b>';
+      bar.appendChild(chip);
+    });
+  }
+
+  // ======================================================
+  // 描画
+  // ======================================================
+  function renderTasks(){
+    renderStorageSummary();
+    var list=document.getElementById('task-list');
+    var emptyMsg=document.getElementById('empty-msg');
+    var countEl=document.getElementById('task-count');
+    var allTasks=loadTasks(), today=getTodayStr();
+    var datFiltered=currentDate ? allTasks.filter(function(t){ return (t.date||today)===currentDate; }) : allTasks;
+    var visible=applyFilters(datFiltered);
+    countEl.textContent=(filterContainer||filterAxle||filterStatus!=='all') ? visible.length+' / '+datFiltered.length+'件' : datFiltered.length+'件';
+    list.innerHTML='';
+    if(!visible.length){ emptyMsg.style.display='block'; return; }
+    emptyMsg.style.display='none';
+    if(currentDate){
+      renderGroup(list,visible);
+    } else {
+      var groups={};
+      visible.forEach(function(t){ var d=t.date||today; if(!groups[d]) groups[d]=[]; groups[d].push(t); });
+      Object.keys(groups).sort().forEach(function(d){
+        var hdr=document.createElement('div'); hdr.className='date-group-header';
+        var l1=document.createElement('div'); l1.className='date-group-line';
+        var lbl=document.createElement('span');
+        lbl.className='date-group-label'+(d===today?' is-today':'');
+        var sfx=d===today?' ▶今日':d===offsetDateStr(today,1)?' ▶明日':d===offsetDateStr(today,-1)?' 昨日':'';
+        lbl.textContent=formatDateLabel(d)+sfx;
+        var l2=document.createElement('div'); l2.className='date-group-line';
+        hdr.appendChild(l1); hdr.appendChild(lbl); hdr.appendChild(l2);
+        list.appendChild(hdr);
+        renderGroup(list,groups[d]);
+      });
+    }
+  }
+
+  function timeToMin(t){ if(!t) return 9999; var p=t.split(':'); return parseInt(p[0])*60+parseInt(p[1]); }
+
+  function renderGroup(list,tasks){
+    // 時間順ソート（常時）
+    var sorted=tasks.slice().sort(function(a,b){ return timeToMin(a.time)-timeToMin(b.time); });
+    sorted.forEach(function(task,idx){
+      var rank=idx+1;
+      var item=document.createElement('div'); item.className='task-item'; item.dataset.id=task.id;
+      item.setAttribute('data-rank',rank<=3?String(rank):'other');
+      if(task.container==='20ft')  item.classList.add('type-20ft');
+      else if(task.container==='40ft') item.classList.add('type-40ft');
+      if(task.picked&&task.returned) item.classList.add('is-done');
+      else if(task.picked)            item.classList.add('is-picked');
+
+      var handle=document.createElement('span'); handle.className='drag-handle'; handle.textContent='☰';
+      var body=document.createElement('div'); body.className='task-body';
+
+      // タスク名
+      var nameEl=document.createElement('span'); nameEl.className='task-name'; nameEl.textContent=task.name;
+      body.appendChild(nameEl);
+
+      // 時間 ＋ コンテナ番号 ＋ 保管場所（同一行）
+      if(task.time || task.containerNo || true){
+        var infoRow=document.createElement('div'); infoRow.className='task-info-row';
+
+        if(task.time){
+          var tb=document.createElement('span'); tb.className='task-time-badge';
+          tb.textContent='⏰ '+task.time; infoRow.appendChild(tb);
+        }
+
+        if(task.containerNo){
+          var cn=document.createElement('span'); cn.className='cn-badge';
+          cn.textContent=task.containerNo; cn.title='タップでコピー';
+          cn.addEventListener('click', function(e){
+            e.stopPropagation(); copyToClipboard(task.containerNo);
+          });
+          infoRow.appendChild(cn);
+        }
+
+        // 保管場所ドロップダウン
+        var sel=document.createElement('select'); sel.className='storage-select';
+        if(task.storage) sel.classList.add('has-value');
+        [['','--'],['弥富','弥富'],['飛島','飛島'],['みよし','みよし'],['千歳','千歳'],['カスミ','カスミ'],['本社','本社']].forEach(function(opt){
+          var o=document.createElement('option');
+          o.value=opt[0]; o.textContent=opt[1];
+          if(task.storage===opt[0]) o.selected=true;
+          sel.appendChild(o);
+        });
+        sel.addEventListener('change', function(e){
+          e.stopPropagation();
+          this.classList.toggle('has-value', this.value!=='');
+          updateTaskField(task.id, 'storage', this.value||null);
+        });
+        infoRow.appendChild(sel);
+
+        // 管理番号・ピックNo（小さなタップでコピーバッジ）
+        if(task.kanriNo){
+          var kn=document.createElement('span'); kn.className='no-badge';
+          kn.textContent='管'+task.kanriNo; kn.title='管理番号コピー';
+          kn.addEventListener('click',function(e){ e.stopPropagation(); copyToClipboard(task.kanriNo); });
+          infoRow.appendChild(kn);
+        }
+        if(task.pickNo){
+          var pn=document.createElement('span'); pn.className='no-badge';
+          pn.textContent='P'+task.pickNo; pn.title='PickNoコピー';
+          pn.addEventListener('click',function(e){ e.stopPropagation(); copyToClipboard(task.pickNo); });
+          infoRow.appendChild(pn);
+        }
+
+        // 号車・シャーシコード入力（datalist + コピー）
+        var ci=document.createElement('input');
+        ci.setAttribute('list','codes');
+        ci.className='chassis-input'+(task.chassisCode?' has-value':'');
+        ci.placeholder='号車';
+        ci.value=task.chassisCode||'';
+        ci.addEventListener('click',function(e){ e.stopPropagation(); });
+        ci.addEventListener('change',function(e){
+          e.stopPropagation();
+          var v=this.value.trim()||null;
+          this.classList.toggle('has-value',!!v);
+          updateTaskField(task.id,'chassisCode',v);
+        });
+        var ciCopy=document.createElement('span');
+        ciCopy.className='no-badge'; ciCopy.textContent='📋'; ciCopy.title='号車コピー';
+        ciCopy.addEventListener('click',function(e){
+          e.stopPropagation();
+          if(ci.value.trim()) copyToClipboard(ci.value.trim());
+        });
+        infoRow.appendChild(ci);
+        infoRow.appendChild(ciCopy);
+
+        body.appendChild(infoRow);
+      }
+
+      item.appendChild(handle); item.appendChild(body);
+
+      // 軸バッジ
+      if(task.axle){ var ab=document.createElement('span'); ab.className='axle-badge '+(task.axle==='2軸'?'axle-2':'axle-3'); ab.textContent=task.axle; item.appendChild(ab); }
+
+      // サイズバッジ（20f / 40f）
+      var sb=document.createElement('span'); sb.className='size-badge';
+      sb.textContent=task.container==='20ft'?'20f':task.container==='40ft'?'40f':'';
+      if(sb.textContent) item.appendChild(sb);
+
+      // P / R ステータスボタン
+      var icons=document.createElement('div'); icons.className='status-icons';
+      var pIcon=document.createElement('div'); pIcon.className='s-icon'+(task.picked?' pick-on':''); pIcon.textContent='P';
+      pIcon.addEventListener('click', function(e){ e.stopPropagation(); toggleStatus(task.id,'picked'); });
+      var rIcon=document.createElement('div'); rIcon.className='s-icon'+(task.returned?' return-on':''); rIcon.textContent='R';
+      rIcon.addEventListener('click', function(e){ e.stopPropagation(); toggleStatus(task.id,'returned'); });
+      icons.appendChild(pIcon); icons.appendChild(rIcon);
+      item.appendChild(icons);
+
+      // 削除ボタン（長押し廃止の代替）
+      var delBtn=document.createElement('button'); delBtn.className='task-delete-btn'; delBtn.textContent='🗑';
+      delBtn.addEventListener('click', function(e){ e.stopPropagation(); moveToTrash(task.id); });
+      item.appendChild(delBtn);
+
+      setupInteraction(item, task.id);
+      list.appendChild(item);
+    });
+  }
+
+  // ======================================================
+  // 初期化
+  // ======================================================
+  document.getElementById('add-btn').addEventListener('click', addTask);
+  document.getElementById('task-input').addEventListener('keydown', function(e){ if(e.key==='Enter') addTask(); });
+  updateDateNav(); updateFilterBtns();
+
+  // ローディングタイムアウト（5秒後に強制表示）
+  setTimeout(function(){
+    document.getElementById('loading-screen').classList.add('hidden');
+  }, 5000);
+</script>
+</body>
+</html>
